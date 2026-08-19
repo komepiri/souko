@@ -9,6 +9,8 @@
 (function () {
   'use strict';
 
+  try {
+
   // すでに起動していたらトグルするだけ
   if (window.__miniDevTools) {
     window.__miniDevTools.toggle();
@@ -27,6 +29,23 @@
     'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
   ].join(';');
   document.documentElement.appendChild(host);
+
+  // Discord/Twitter等はポータル型モーダルを後から <html> 直下やbody直下に追加してくることがあり、
+  // 追加順が後 = 描画が上になるため、こちらのパネルが埋もれて操作不能に見えることがある。
+  // documentElementの子要素構成を監視し、hostが最後尾でなくなったら都度末尾に戻して最前面を維持する。
+  var reorderScheduled = false;
+  function keepHostOnTop() {
+    if (reorderScheduled) return;
+    reorderScheduled = true;
+    requestAnimationFrame(function () {
+      reorderScheduled = false;
+      if (document.documentElement.lastElementChild !== host) {
+        document.documentElement.appendChild(host); // 末尾に移動しなおす(=再度最前面に)
+      }
+    });
+  }
+  var topObserver = new MutationObserver(keepHostOnTop);
+  topObserver.observe(document.documentElement, { childList: true });
 
   var shadow = host.attachShadow({ mode: 'open' });
 
@@ -124,7 +143,7 @@
     '.cm-box{position:absolute;inset:0;margin:0;padding:8px;font-size:14px;line-height:20px;' +
       'font-family:Menlo,Consolas,monospace;white-space:pre;overflow-x:auto;overflow-y:hidden;' +
       'border:1px solid #333;border-radius:5px;box-sizing:border-box;}' +
-    '.cm-pre{background:#111;color:#e0e0e0;pointer-events:none;}' +
+    '.cm-pre{background:#111;color:#d4d4d4;pointer-events:none;}' +
     '.cm-pre code{white-space:pre;}' +
     '.cm-input{background:transparent;color:transparent;caret-color:#fff;border-color:transparent;resize:none;}' +
     '.cm-input::placeholder{color:#666;opacity:1;}' +
@@ -134,13 +153,35 @@
       'z-index:5;box-shadow:0 -2px 8px rgba(0,0,0,.5);}' +
     '.cm-suggest-item{padding:6px 10px;font-family:Menlo,Consolas,monospace;font-size:12px;color:#ccc;}' +
     '.cm-suggest-item.active{background:#0d5c8a;color:#fff;}' +
-    '.tok-keyword{color:#569cd6;}' +
+    '.tok-keyword{color:#c586c0;}' +
+    '.tok-storage{color:#569cd6;}' +
     '.tok-string{color:#ce9178;}' +
     '.tok-number{color:#b5cea8;}' +
-    '.tok-comment{color:#6a9955;font-style:italic;}' +
-    '.tok-punct{color:#d4d4d4;}' +
-    '.tok-op{color:#d4d4d4;}';
+    '.tok-function{color:#dcdcaa;}' +
+    '.tok-property{color:#9cdcfe;}' +
+    '.tok-comment{color:#6a9955;font-style:italic;}';
   shadow.appendChild(style);
+
+  // ---- Trusted Types対策 ----
+  // Discord/Twitter等、セキュリティの厳しいSPAは CSP の Trusted Types を強制しており、
+  // 素の innerHTML への文字列代入がブロックされることがある(何も表示されない主要因の一つ)。
+  // 専用ポリシーを作って迂回し、失敗時はタグを剥がしたテキストとして流し込む(真っ白になるよりまし)。
+  var ttPolicy = null;
+  if (window.trustedTypes && window.trustedTypes.createPolicy) {
+    try {
+      ttPolicy = window.trustedTypes.createPolicy('mini-devtools-' + Date.now(), {
+        createHTML: function (s) { return s; }
+      });
+    } catch (e) { ttPolicy = null; }
+  }
+  function setHTML(el, html) {
+    try {
+      el.innerHTML = ttPolicy ? ttPolicy.createHTML(html) : html;
+    } catch (e) {
+      el.textContent = String(html).replace(/<[^>]*>/g, '');
+    }
+  }
+
 
   // ---------- FAB(トグルボタン、ドラッグ移動可) ----------
   var fab = document.createElement('div');
@@ -152,7 +193,7 @@
   // ---------- パネル本体 ----------
   var panel = document.createElement('div');
   panel.className = 'panel hidden';
-  panel.innerHTML =
+  setHTML(panel,
     '<div class="drag"><span></span></div>' +
     '<div class="tabs">' +
       '<div class="tab active" data-tab="console">Console</div>' +
@@ -208,7 +249,7 @@
         '</div>' +
         '<div id="storelist"></div>' +
       '</div>' +
-    '</div>';
+    '</div>');
   shadow.appendChild(panel);
 
   var $ = function (sel) { return shadow.querySelector(sel); };
@@ -426,27 +467,41 @@
   var cmdHistory = [];
   var histIndex = -1;
 
-  // ---- シンタックスハイライト(軽量な正規表現トークナイザ) ----
-  var JS_KEYWORDS = ['var', 'let', 'const', 'function', 'return', 'if', 'else', 'for', 'while', 'do',
-    'switch', 'case', 'break', 'continue', 'new', 'delete', 'typeof', 'instanceof', 'in', 'of',
-    'try', 'catch', 'finally', 'throw', 'class', 'extends', 'super', 'this', 'null', 'true', 'false',
-    'undefined', 'void', 'yield', 'async', 'await', 'import', 'export', 'default', 'static', 'get', 'set'];
+  // ---- シンタックスハイライト(軽量な正規表現トークナイザ、VS Code Dark+風配色) ----
+  var CONTROL_KEYWORDS = ['if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
+    'return', 'throw', 'try', 'catch', 'finally', 'in', 'of', 'instanceof', 'typeof', 'delete',
+    'void', 'yield', 'await', 'new'];
+  var STORAGE_KEYWORDS = ['var', 'let', 'const', 'function', 'class', 'extends', 'static', 'async',
+    'import', 'export', 'default', 'get', 'set'];
+  var LITERAL_KEYWORDS = ['true', 'false', 'null', 'undefined', 'this', 'super'];
+  var JS_KEYWORDS = CONTROL_KEYWORDS.concat(STORAGE_KEYWORDS, LITERAL_KEYWORDS);
   var TOKEN_RE = /(\/\/[^\n]*)|(\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)|(\b\d+(?:\.\d+)?\b)|(\b[A-Za-z_$][A-Za-z0-9_$]*\b)|([{}()\[\].,;:?])|([+\-*/%=<>!&|^~]+)/g;
 
   function highlightJS(code) {
-    return code.replace(TOKEN_RE, function (match, comment, blockComment, str, num, ident, punct, op) {
+    return code.replace(TOKEN_RE, function (match, comment, blockComment, str, num, ident, punct, op, offset, full) {
       var safe = esc(match);
       if (comment || blockComment) return '<span class="tok-comment">' + safe + '</span>';
       if (str) return '<span class="tok-string">' + safe + '</span>';
       if (num) return '<span class="tok-number">' + safe + '</span>';
-      if (ident) return JS_KEYWORDS.indexOf(match) !== -1 ? '<span class="tok-keyword">' + safe + '</span>' : safe;
-      if (punct) return '<span class="tok-punct">' + safe + '</span>';
-      if (op) return '<span class="tok-op">' + safe + '</span>';
-      return safe;
+      if (ident) {
+        if (CONTROL_KEYWORDS.indexOf(match) !== -1) return '<span class="tok-keyword">' + safe + '</span>';
+        if (STORAGE_KEYWORDS.indexOf(match) !== -1) return '<span class="tok-storage">' + safe + '</span>';
+        if (LITERAL_KEYWORDS.indexOf(match) !== -1) return '<span class="tok-storage">' + safe + '</span>';
+        // 直後の非空白文字が "(" なら関数呼び出し/定義(VS Codeの黄色)。ドット直後でも呼び出しなら黄色を優先
+        var afterTrim = full.slice(offset + match.length).replace(/^\s+/, '');
+        if (afterTrim.charAt(0) === '(') return '<span class="tok-function">' + safe + '</span>';
+        // 直前の非空白文字が "." なら(呼び出しでない)プロパティアクセス(VS Codeの水色)
+        var beforeTrim = full.slice(0, offset).replace(/\s+$/, '');
+        if (beforeTrim.charAt(beforeTrim.length - 1) === '.') {
+          return '<span class="tok-property">' + safe + '</span>';
+        }
+        return safe; // 通常の識別子は既定の文字色を継承
+      }
+      return safe; // 記号・演算子は既定の文字色のまま(VS Codeもここは強調しない)
     });
   }
   function updateHighlight() {
-    cmpreCode.innerHTML = highlightJS(cmdinput.value) + '\n';
+    setHTML(cmpreCode, highlightJS(cmdinput.value) + '\n');
   }
   function syncScroll() {
     cmpre.scrollTop = cmdinput.scrollTop;
@@ -508,7 +563,7 @@
   function showSuggestions(list, objPath, partial) {
     suggestItems = list.map(function (name) { return { name: name, objPath: objPath }; });
     suggestIndex = -1;
-    cmsuggest.innerHTML = '';
+    cmsuggest.textContent = '';
     suggestItems.forEach(function (item) {
       var row = document.createElement('div');
       row.className = 'cm-suggest-item';
@@ -523,7 +578,7 @@
   }
   function hideSuggestions() {
     cmsuggest.style.display = 'none';
-    cmsuggest.innerHTML = '';
+    cmsuggest.textContent = '';
     suggestItems = [];
     suggestIndex = -1;
   }
@@ -621,7 +676,7 @@
     }
   });
   shadow.addEventListener('click', function (e) {
-    if (e.target && e.target.dataset && e.target.dataset.act === 'clear-console') consolelist.innerHTML = '';
+    if (e.target && e.target.dataset && e.target.dataset.act === 'clear-console') consolelist.textContent = '';
   });
 
   // ================= Elements =================
@@ -680,10 +735,10 @@
     pickbtn.textContent = '要素を選択';
     selectElement(el);
   }
-  document.addEventListener('mousemove', pickMove, true);
-  document.addEventListener('touchmove', pickTouchMove, { passive: false, capture: true });
-  document.addEventListener('click', pickClick, true);
-  document.addEventListener('touchend', pickClick, true);
+  window.addEventListener('mousemove', pickMove, true);
+  window.addEventListener('touchmove', pickTouchMove, { passive: false, capture: true });
+  window.addEventListener('click', pickClick, true);
+  window.addEventListener('touchend', pickClick, true);
 
   function selectElement(el) {
     currentEl = el;
@@ -705,7 +760,7 @@
       if (n === document.documentElement) break;
       n = n.parentElement;
     }
-    crumbs.innerHTML = '';
+    crumbs.textContent = '';
     chain.forEach(function (node) {
       var c = document.createElement('span');
       c.className = 'crumb' + (node === currentEl ? ' current' : '');
@@ -728,7 +783,7 @@
 
   function renderElView() {
     if (!currentEl) {
-      elcontent.innerHTML = '<div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください(選択後は $0 でも参照できます)</div>';
+      setHTML(elcontent, '<div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください(選択後は $0 でも参照できます)</div>');
       return;
     }
     if (currentElView === 'styles') renderStylesView();
@@ -738,7 +793,7 @@
   }
 
   function renderStylesView() {
-    elcontent.innerHTML = '';
+    elcontent.textContent = '';
     var box = document.createElement('div');
     box.className = 'el-sec-title';
     box.textContent = '<' + currentEl.tagName.toLowerCase() + '> の style を編集';
@@ -762,9 +817,9 @@
 
     var addRow = document.createElement('div');
     addRow.className = 'add-row';
-    addRow.innerHTML = '<input class="pkey" placeholder="property (例: color)" />' +
+    setHTML(addRow, '<input class="pkey" placeholder="property (例: color)" />' +
       '<input class="pval" placeholder="value (例: red)" />' +
-      '<button class="btn">+ 追加</button>';
+      '<button class="btn">+ 追加</button>');
     var pkey = addRow.querySelector('.pkey'), pval = addRow.querySelector('.pval');
     addRow.querySelector('button').addEventListener('click', function () {
       if (!pkey.value) return;
@@ -791,7 +846,7 @@
   }
 
   function renderAttrsView() {
-    elcontent.innerHTML = '';
+    elcontent.textContent = '';
     var title = document.createElement('div');
     title.className = 'el-sec-title';
     title.textContent = '属性';
@@ -830,9 +885,9 @@
 
     var addRow = document.createElement('div');
     addRow.className = 'add-row';
-    addRow.innerHTML = '<input class="pkey" placeholder="name (例: data-foo)" />' +
+    setHTML(addRow, '<input class="pkey" placeholder="name (例: data-foo)" />' +
       '<input class="pval" placeholder="value" />' +
-      '<button class="btn">+ 追加</button>';
+      '<button class="btn">+ 追加</button>');
     var pkey = addRow.querySelector('.pkey'), pval = addRow.querySelector('.pval');
     addRow.querySelector('button').addEventListener('click', function () {
       if (!pkey.value) return;
@@ -844,7 +899,7 @@
   }
 
   function renderHtmlView() {
-    elcontent.innerHTML = '';
+    elcontent.textContent = '';
     var title = document.createElement('div');
     title.className = 'el-sec-title';
     title.textContent = 'innerHTML(編集して適用を押すと反映されます)';
@@ -857,11 +912,11 @@
 
     var bar = document.createElement('div');
     bar.className = 'applybar';
-    bar.innerHTML = '<button class="btn on">適用</button><button class="btn">リセット</button>';
+    setHTML(bar, '<button class="btn on">適用</button><button class="btn">リセット</button>');
     var applyBtn = bar.children[0], resetBtn = bar.children[1];
     applyBtn.addEventListener('click', function () {
       try {
-        currentEl.innerHTML = ta.value;
+        setHTML(currentEl, ta.value);
         addConsoleEntry('info', ['innerHTML を更新しました']);
       } catch (err) {
         addConsoleEntry('error', [err]);
@@ -872,7 +927,7 @@
   }
 
   function renderChildrenView() {
-    elcontent.innerHTML = '';
+    elcontent.textContent = '';
     var title = document.createElement('div');
     title.className = 'el-sec-title';
     title.textContent = '子要素(タップで選択を移動)';
@@ -881,15 +936,15 @@
     var list = document.createElement('div');
     list.className = 'children-list';
     if (!currentEl.children.length) {
-      list.innerHTML = '<div class="empty">子要素はありません</div>';
+      setHTML(list, '<div class="empty">子要素はありません</div>');
     } else {
       Array.prototype.forEach.call(currentEl.children, function (child) {
         var row = document.createElement('div');
         row.className = 'child';
-        row.innerHTML = '&lt;' + child.tagName.toLowerCase() +
+        setHTML(row, '&lt;' + child.tagName.toLowerCase() +
           (child.id ? ' id="' + esc(child.id) + '"' : '') +
           (child.className && typeof child.className === 'string' ? ' class="' + esc(child.className) + '"' : '') +
-          '&gt; <span class="cnt">' + child.children.length + ' children</span>';
+          '&gt; <span class="cnt">' + child.children.length + ' children</span>');
         row.addEventListener('click', function () { selectElement(child); });
         list.appendChild(row);
       });
@@ -921,9 +976,9 @@
   function renderNetList() {
     var q = (netsearch.value || '').toLowerCase();
     var filtered = netEntries.filter(function (e) { return !q || e.url.toLowerCase().indexOf(q) !== -1; });
-    netlist.innerHTML = '';
+    netlist.textContent = '';
     if (!filtered.length) {
-      netlist.innerHTML = '<div class="empty">' + (netEntries.length ? '一致する通信がありません' : '通信を待機中です(fetch / XHR)') + '</div>';
+      setHTML(netlist, '<div class="empty">' + (netEntries.length ? '一致する通信がありません' : '通信を待機中です(fetch / XHR)') + '</div>');
       return;
     }
     filtered.forEach(function (entry) { netlist.appendChild(buildNetRow(entry)); });
@@ -964,7 +1019,7 @@
     head.className = 'main';
     var badgeM = '<span class="badge ' + (entry.method === 'GET' ? 'get' : 'post') + '">' + entry.method + '</span>';
     var badgeS = '<span class="badge ' + (entry.ok ? 'ok' : 'err') + '">' + entry.status + '</span>';
-    head.innerHTML = badgeM + badgeS + esc(entry.url);
+    setHTML(head, badgeM + badgeS + esc(entry.url));
     var sub = document.createElement('div');
     sub.className = 'sub';
     sub.textContent = entry.ms + 'ms';
@@ -1111,7 +1166,7 @@
   });
 
   function renderStorage() {
-    storelist.innerHTML = '';
+    storelist.textContent = '';
     var pairs = [];
     if (currentStore === 'cookie') {
       document.cookie.split(';').map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (p) {
@@ -1126,7 +1181,7 @@
       }
     }
     if (!pairs.length) {
-      storelist.innerHTML = '<div class="empty">データがありません(上の入力欄から追加できます)</div>';
+      setHTML(storelist, '<div class="empty">データがありません(上の入力欄から追加できます)</div>');
       return;
     }
     pairs.forEach(function (pair) { addKv(pair[0], pair[1]); });
@@ -1186,14 +1241,22 @@
       window.removeEventListener('hashchange', onNav);
       window.removeEventListener('error', onWindowError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
-      document.removeEventListener('mousemove', pickMove, true);
-      document.removeEventListener('touchmove', pickTouchMove, true);
-      document.removeEventListener('click', pickClick, true);
-      document.removeEventListener('touchend', pickClick, true);
+      window.removeEventListener('mousemove', pickMove, true);
+      window.removeEventListener('touchmove', pickTouchMove, true);
+      window.removeEventListener('click', pickClick, true);
+      window.removeEventListener('touchend', pickClick, true);
+      topObserver.disconnect();
       host.remove();
       delete window.__miniDevTools;
     }
   };
 
   addConsoleEntry('info', ['Mini DevTools を起動しました']);
+
+  } catch (initErr) {
+    // 初期化中に例外が出た場合(CSPやサイト固有の制約など)は無反応にせず必ず表示する
+    try { console.error('[Mini DevTools] 初期化に失敗しました', initErr); } catch (e2) {}
+    alert('Mini DevTools の初期化に失敗しました:\n' + (initErr && initErr.message ? initErr.message : initErr) +
+      '\n\nこのサイトのCSP(Content Security Policy)による制約の可能性があります。');
+  }
 })();
