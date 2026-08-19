@@ -63,7 +63,7 @@
     '.log.info{color:#4fc3f7;}' +
     '.log.cmd{color:#9ccc65;}' +
     '.consolelist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;}' +
-    '.inputrow{display:flex;gap:6px;padding:6px 8px;border-top:1px solid #2a2a2a;flex-shrink:0;}' +
+    '.inputrow{display:flex;gap:6px;padding:6px 8px;border-top:1px solid #2a2a2a;flex-shrink:0;align-items:flex-start;}' +
     '.inputrow input{flex:1;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:5px;' +
       'padding:8px;font-size:14px;font-family:Menlo,Consolas,monospace;}' +
     '.row{padding:6px 4px;border-bottom:1px solid #262626;font-size:12px;}' +
@@ -119,7 +119,27 @@
     '.obj-string{color:#ce9178;}' +
     '.obj-number{color:#b5cea8;}' +
     '.obj-boolean{color:#569cd6;}' +
-    '.obj-nullish{color:#888;}';
+    '.obj-nullish{color:#888;}' +
+    '.cm-wrap{position:relative;flex:1;height:38px;}' +
+    '.cm-box{position:absolute;inset:0;margin:0;padding:8px;font-size:14px;line-height:20px;' +
+      'font-family:Menlo,Consolas,monospace;white-space:pre;overflow-x:auto;overflow-y:hidden;' +
+      'border:1px solid #333;border-radius:5px;box-sizing:border-box;}' +
+    '.cm-pre{background:#111;color:#e0e0e0;pointer-events:none;}' +
+    '.cm-pre code{white-space:pre;}' +
+    '.cm-input{background:transparent;color:transparent;caret-color:#fff;border-color:transparent;resize:none;}' +
+    '.cm-input::placeholder{color:#666;opacity:1;}' +
+    '.cm-wrap.focused .cm-pre{border-color:#4fc3f7;}' +
+    '.cm-suggest{position:absolute;bottom:100%;left:0;right:0;max-height:160px;overflow-y:auto;' +
+      'background:#1e1e1e;border:1px solid #333;border-radius:5px;margin-bottom:4px;display:none;' +
+      'z-index:5;box-shadow:0 -2px 8px rgba(0,0,0,.5);}' +
+    '.cm-suggest-item{padding:6px 10px;font-family:Menlo,Consolas,monospace;font-size:12px;color:#ccc;}' +
+    '.cm-suggest-item.active{background:#0d5c8a;color:#fff;}' +
+    '.tok-keyword{color:#569cd6;}' +
+    '.tok-string{color:#ce9178;}' +
+    '.tok-number{color:#b5cea8;}' +
+    '.tok-comment{color:#6a9955;font-style:italic;}' +
+    '.tok-punct{color:#d4d4d4;}' +
+    '.tok-op{color:#d4d4d4;}';
   shadow.appendChild(style);
 
   // ---------- FAB(トグルボタン、ドラッグ移動可) ----------
@@ -145,8 +165,15 @@
         '<div class="toolbar"><button class="btn" data-act="clear-console">Clear</button>' +
           '<span class="spacer"></span><button class="btn close" data-act="close">&times;</button></div>' +
         '<div class="consolelist" id="consolelist"></div>' +
-        '<div class="inputrow"><input id="cmdinput" placeholder="JSを実行... (Enterで実行 / Up,Downで履歴)" />' +
-          '<button class="btn" id="cmdrun">実行</button></div>' +
+        '<div class="inputrow">' +
+          '<div class="cm-wrap">' +
+            '<div class="cm-suggest" id="cmsuggest"></div>' +
+            '<pre class="cm-box cm-pre" id="cmpre"><code></code></pre>' +
+            '<textarea id="cmdinput" class="cm-box cm-input" rows="1" spellcheck="false" autocapitalize="off" autocomplete="off" ' +
+              'placeholder="JSを実行... (Enterで実行 / Tabで補完 / Up,Downで履歴)"></textarea>' +
+          '</div>' +
+          '<button class="btn" id="cmdrun">実行</button>' +
+        '</div>' +
       '</div>' +
       '<div class="view" data-view="elements">' +
         '<div class="toolbar"><button class="btn" id="pickbtn">要素を選択</button>' +
@@ -392,8 +419,151 @@
   window.addEventListener('unhandledrejection', onUnhandledRejection);
 
   var cmdinput = $('#cmdinput');
+  var cmpre = $('#cmpre');
+  var cmpreCode = cmpre.querySelector('code');
+  var cmsuggest = $('#cmsuggest');
+  var cmWrap = $('.cm-wrap');
   var cmdHistory = [];
   var histIndex = -1;
+
+  // ---- シンタックスハイライト(軽量な正規表現トークナイザ) ----
+  var JS_KEYWORDS = ['var', 'let', 'const', 'function', 'return', 'if', 'else', 'for', 'while', 'do',
+    'switch', 'case', 'break', 'continue', 'new', 'delete', 'typeof', 'instanceof', 'in', 'of',
+    'try', 'catch', 'finally', 'throw', 'class', 'extends', 'super', 'this', 'null', 'true', 'false',
+    'undefined', 'void', 'yield', 'async', 'await', 'import', 'export', 'default', 'static', 'get', 'set'];
+  var TOKEN_RE = /(\/\/[^\n]*)|(\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)|(\b\d+(?:\.\d+)?\b)|(\b[A-Za-z_$][A-Za-z0-9_$]*\b)|([{}()\[\].,;:?])|([+\-*/%=<>!&|^~]+)/g;
+
+  function highlightJS(code) {
+    return code.replace(TOKEN_RE, function (match, comment, blockComment, str, num, ident, punct, op) {
+      var safe = esc(match);
+      if (comment || blockComment) return '<span class="tok-comment">' + safe + '</span>';
+      if (str) return '<span class="tok-string">' + safe + '</span>';
+      if (num) return '<span class="tok-number">' + safe + '</span>';
+      if (ident) return JS_KEYWORDS.indexOf(match) !== -1 ? '<span class="tok-keyword">' + safe + '</span>' : safe;
+      if (punct) return '<span class="tok-punct">' + safe + '</span>';
+      if (op) return '<span class="tok-op">' + safe + '</span>';
+      return safe;
+    });
+  }
+  function updateHighlight() {
+    cmpreCode.innerHTML = highlightJS(cmdinput.value) + '\n';
+  }
+  function syncScroll() {
+    cmpre.scrollTop = cmdinput.scrollTop;
+    cmpre.scrollLeft = cmdinput.scrollLeft;
+  }
+
+  // ---- 自動補完(実際にオブジェクトを評価してプロパティを列挙) ----
+  var suggestItems = [];
+  var suggestIndex = -1;
+  var globalNamesCache = null;
+  function getGlobalNames() {
+    if (!globalNamesCache) {
+      var names = {};
+      JS_KEYWORDS.forEach(function (k) { names[k] = true; });
+      try { Object.getOwnPropertyNames(window).forEach(function (n) { names[n] = true; }); } catch (e) {}
+      globalNamesCache = Object.keys(names);
+    }
+    return globalNamesCache;
+  }
+  function getObjectProps(expr) {
+    var obj;
+    try { obj = (0, eval)(expr); } catch (e) { return null; }
+    if (obj === null || obj === undefined) return [];
+    var seen = {};
+    var o = obj, depth = 0;
+    while (o != null && depth < 12) {
+      try { Object.getOwnPropertyNames(o).forEach(function (p) { seen[p] = true; }); } catch (e) {}
+      o = Object.getPrototypeOf(o);
+      depth++;
+    }
+    return Object.keys(seen);
+  }
+  function extractChain(text) {
+    var m = text.match(/[A-Za-z0-9_$.]*$/);
+    return m ? m[0] : '';
+  }
+  function updateSuggestions() {
+    var caret = cmdinput.selectionStart;
+    var text = cmdinput.value.slice(0, caret);
+    var chain = extractChain(text);
+    if (!chain) { hideSuggestions(); return; }
+    var lastDot = chain.lastIndexOf('.');
+    var objPath = lastDot === -1 ? '' : chain.slice(0, lastDot);
+    var partial = lastDot === -1 ? chain : chain.slice(lastDot + 1);
+    var candidates;
+    if (objPath) {
+      var props = getObjectProps(objPath);
+      if (props === null) { hideSuggestions(); return; }
+      candidates = props;
+    } else {
+      if (partial.length < 2) { hideSuggestions(); return; }
+      candidates = getGlobalNames();
+    }
+    var filtered = candidates.filter(function (c) { return c.indexOf(partial) === 0 && c !== partial; })
+      .sort().slice(0, 30);
+    if (!filtered.length) { hideSuggestions(); return; }
+    showSuggestions(filtered, objPath, partial);
+  }
+  function showSuggestions(list, objPath, partial) {
+    suggestItems = list.map(function (name) { return { name: name, objPath: objPath }; });
+    suggestIndex = -1;
+    cmsuggest.innerHTML = '';
+    suggestItems.forEach(function (item) {
+      var row = document.createElement('div');
+      row.className = 'cm-suggest-item';
+      row.textContent = item.name;
+      row.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        applySuggestion(suggestItems.indexOf(item));
+      });
+      cmsuggest.appendChild(row);
+    });
+    cmsuggest.style.display = 'block';
+  }
+  function hideSuggestions() {
+    cmsuggest.style.display = 'none';
+    cmsuggest.innerHTML = '';
+    suggestItems = [];
+    suggestIndex = -1;
+  }
+  function moveSuggestIndex(delta) {
+    if (!suggestItems.length) return;
+    suggestIndex = (suggestIndex + delta + suggestItems.length) % suggestItems.length;
+    Array.prototype.forEach.call(cmsuggest.children, function (el, i) {
+      el.classList.toggle('active', i === suggestIndex);
+    });
+    cmsuggest.children[suggestIndex].scrollIntoView({ block: 'nearest' });
+  }
+  function applySuggestion(i) {
+    var item = suggestItems[i];
+    if (!item) return;
+    var caret = cmdinput.selectionStart;
+    var before = cmdinput.value.slice(0, caret);
+    var after = cmdinput.value.slice(caret);
+    var chain = extractChain(before);
+    var newBefore = before.slice(0, before.length - chain.length) + (item.objPath ? item.objPath + '.' : '') + item.name;
+    cmdinput.value = newBefore + after;
+    var newCaret = newBefore.length;
+    cmdinput.setSelectionRange(newCaret, newCaret);
+    updateHighlight();
+    syncScroll();
+    hideSuggestions();
+    cmdinput.focus();
+  }
+
+  cmdinput.addEventListener('input', function () {
+    updateHighlight();
+    syncScroll();
+    updateSuggestions();
+  });
+  cmdinput.addEventListener('scroll', syncScroll);
+  cmdinput.addEventListener('focus', function () { cmWrap.classList.add('focused'); });
+  cmdinput.addEventListener('blur', function () {
+    cmWrap.classList.remove('focused');
+    setTimeout(hideSuggestions, 150); // 候補タップのmousedownを先に処理させる
+  });
+
   function runCmd() {
     var code = cmdinput.value;
     if (!code) return;
@@ -410,23 +580,44 @@
       addConsoleEntry('error', [err]);
     }
     cmdinput.value = '';
+    updateHighlight();
+    hideSuggestions();
     consolelist.scrollTop = consolelist.scrollHeight;
   }
   $('#cmdrun').addEventListener('click', runCmd);
   cmdinput.addEventListener('keydown', function (e) {
+    var suggestVisible = cmsuggest.style.display === 'block';
+    if (suggestVisible && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      moveSuggestIndex(e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (suggestVisible && (e.key === 'Tab' || (e.key === 'Enter' && suggestIndex !== -1))) {
+      e.preventDefault();
+      applySuggestion(suggestIndex === -1 ? 0 : suggestIndex);
+      return;
+    }
+    if (suggestVisible && e.key === 'Escape') {
+      e.preventDefault();
+      hideSuggestions();
+      return;
+    }
     if (e.key === 'Enter') {
+      e.preventDefault(); // textareaなので改行を防いで実行に割り当てる
       runCmd();
     } else if (e.key === 'ArrowUp') {
       if (!cmdHistory.length) return;
+      e.preventDefault();
       histIndex = histIndex === -1 ? cmdHistory.length - 1 : Math.max(0, histIndex - 1);
       cmdinput.value = cmdHistory[histIndex];
-      e.preventDefault();
+      updateHighlight();
     } else if (e.key === 'ArrowDown') {
       if (histIndex === -1) return;
+      e.preventDefault();
       histIndex++;
       if (histIndex >= cmdHistory.length) { histIndex = -1; cmdinput.value = ''; }
       else cmdinput.value = cmdHistory[histIndex];
-      e.preventDefault();
+      updateHighlight();
     }
   });
   shadow.addEventListener('click', function (e) {
