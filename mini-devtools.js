@@ -3,6 +3,7 @@
  * - Shadow DOM(open)でページのCSSと完全に分離(お互いに干渉しない)
  * - Console / Elements / Network / Storage の4タブ
  * - スマホのタッチ操作前提のUI(ボトムシート・ドラッグでリサイズ)
+ * - console/fetch/XHR/historyのフックはdestroy()で全て復元される
  * Usage: このファイルをブックマークレットから <script> 注入して呼び出す
  */
 (function () {
@@ -17,7 +18,6 @@
   // ---------- ホスト要素(ページCSSの影響を受けない/与えない) ----------
   var host = document.createElement('div');
   host.id = '__mini_devtools_host__';
-  // ページ側のCSSに巻き込まれないよう、host自体はinlineで最小限のリセットのみ
   host.style.cssText = [
     'all: initial',
     'position: fixed',
@@ -34,23 +34,24 @@
   style.textContent =
     ':host{all:initial;}' +
     '*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}' +
-    '.fab{position:fixed;right:16px;bottom:16px;width:48px;height:48px;border-radius:50%;' +
+    '.fab{position:fixed;right:16px;bottom:16px;width:46px;height:46px;border-radius:50%;' +
       'background:#1e1e1e;color:#4fc3f7;display:flex;align-items:center;justify-content:center;' +
-      'font-size:20px;font-weight:bold;box-shadow:0 2px 10px rgba(0,0,0,.5);pointer-events:auto;' +
+      'font-size:19px;font-weight:bold;box-shadow:0 2px 10px rgba(0,0,0,.5);pointer-events:auto;' +
       'user-select:none;touch-action:none;border:2px solid #333;}' +
-    '.panel{position:fixed;left:0;right:0;bottom:0;height:46vh;min-height:150px;max-height:90vh;' +
+    '.panel{position:fixed;left:0;right:0;bottom:0;height:48vh;min-height:180px;max-height:92vh;' +
       'background:#1e1e1e;color:#e0e0e0;display:flex;flex-direction:column;pointer-events:auto;' +
       'box-shadow:0 -2px 12px rgba(0,0,0,.6);font-size:13px;border-top:1px solid #333;}' +
     '.panel.hidden{display:none;}' +
-    '.drag{height:14px;display:flex;align-items:center;justify-content:center;touch-action:none;cursor:ns-resize;}' +
+    '.drag{height:14px;display:flex;align-items:center;justify-content:center;touch-action:none;cursor:ns-resize;flex-shrink:0;}' +
     '.drag span{width:36px;height:4px;border-radius:2px;background:#555;}' +
     '.tabs{display:flex;border-bottom:1px solid #333;flex-shrink:0;overflow-x:auto;}' +
     '.tab{flex:1;padding:9px 4px;text-align:center;color:#888;font-size:12px;white-space:nowrap;}' +
     '.tab.active{color:#4fc3f7;border-bottom:2px solid #4fc3f7;font-weight:600;}' +
-    '.toolbar{display:flex;align-items:center;gap:6px;padding:5px 8px;border-bottom:1px solid #2a2a2a;flex-shrink:0;}' +
-    '.btn{background:#2c2c2c;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:5px 9px;font-size:12px;}' +
+    '.toolbar{display:flex;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px solid #2a2a2a;flex-shrink:0;}' +
+    '.btn{background:#2c2c2c;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:5px 9px;font-size:12px;flex-shrink:0;}' +
     '.btn:active{background:#3a3a3a;}' +
     '.btn.on{background:#0d5c8a;color:#fff;border-color:#0d5c8a;}' +
+    '.btn.close{background:transparent;border-color:transparent;color:#888;font-size:16px;padding:2px 8px;}' +
     '.spacer{flex:1;}' +
     '.body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 8px;}' +
     '.view{display:none;height:100%;flex-direction:column;}' +
@@ -61,12 +62,12 @@
     '.log.warn{color:#ffd166;}' +
     '.log.info{color:#4fc3f7;}' +
     '.log.cmd{color:#9ccc65;}' +
-    '.log.net{color:#ba68c8;}' +
     '.consolelist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;}' +
     '.inputrow{display:flex;gap:6px;padding:6px 8px;border-top:1px solid #2a2a2a;flex-shrink:0;}' +
     '.inputrow input{flex:1;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:5px;' +
       'padding:8px;font-size:14px;font-family:Menlo,Consolas,monospace;}' +
     '.row{padding:6px 4px;border-bottom:1px solid #262626;font-size:12px;}' +
+    '.row.net-row{cursor:pointer;}' +
     '.row .main{color:#e0e0e0;font-family:Menlo,Consolas,monospace;word-break:break-all;}' +
     '.row .sub{color:#888;font-size:11px;margin-top:2px;}' +
     '.kv{display:flex;justify-content:space-between;gap:8px;padding:6px 4px;border-bottom:1px solid #262626;font-size:12px;}' +
@@ -80,12 +81,11 @@
     '.badge.ok{background:#2e7d32;color:#fff;}' +
     '.badge.err{background:#c62828;color:#fff;}' +
     '.highlight{position:fixed;background:rgba(79,195,247,.25);border:1px solid #4fc3f7;pointer-events:none;z-index:2147483647;}' +
-    '.eltinfo{padding:6px 4px;font-family:Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;border-bottom:1px solid #333;background:#151515;}' +
     '.subtabs{display:flex;gap:6px;padding:5px 8px;border-bottom:1px solid #2a2a2a;flex-shrink:0;overflow-x:auto;}' +
     '.subtabs .btn.on{background:#0d5c8a;}' +
     '.crumbs{display:flex;gap:2px;overflow-x:auto;padding:6px 8px;border-bottom:1px solid #2a2a2a;flex-shrink:0;white-space:nowrap;}' +
     '.crumb{color:#4fc3f7;font-family:Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:3px;flex-shrink:0;}' +
-    '.crumb:after{content:"›";color:#555;margin-left:4px;}' +
+    '.crumb:after{content:"\\203a";color:#555;margin-left:4px;}' +
     '.crumb:last-child:after{content:"";}' +
     '.crumb.current{background:#0d5c8a;color:#fff;}' +
     '.el-sec-title{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.03em;padding:8px 4px 4px;}' +
@@ -104,7 +104,22 @@
     '.htmlarea{width:100%;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:5px;padding:8px;' +
       'font-family:Menlo,Consolas,monospace;font-size:12px;min-height:110px;resize:vertical;}' +
     '.applybar{display:flex;gap:6px;padding:6px 4px;}' +
-    '.selecthint{color:#666;text-align:center;padding:24px 8px;font-size:12px;}';
+    '.selecthint{color:#666;text-align:center;padding:24px 8px;font-size:12px;}' +
+    '.chk{display:flex;align-items:center;gap:4px;color:#888;font-size:11px;white-space:nowrap;}' +
+    '.chk input{accent-color:#4fc3f7;}' +
+    '.net-detail{border-top:1px dashed #333;margin-top:6px;padding-top:4px;}' +
+    '.net-body{font-family:Menlo,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;' +
+      'background:#111;border:1px solid #2a2a2a;border-radius:4px;padding:6px;max-height:150px;overflow:auto;}' +
+    '.obj-node{display:inline-block;vertical-align:top;}' +
+    '.obj-head{cursor:pointer;color:#e0e0e0;}' +
+    '.obj-tri{display:inline-block;width:12px;color:#888;}' +
+    '.obj-kids{margin-left:13px;border-left:1px solid #333;padding-left:6px;}' +
+    '.obj-row{padding:1px 0;}' +
+    '.obj-key{color:#9cdcfe;}' +
+    '.obj-string{color:#ce9178;}' +
+    '.obj-number{color:#b5cea8;}' +
+    '.obj-boolean{color:#569cd6;}' +
+    '.obj-nullish{color:#888;}';
   shadow.appendChild(style);
 
   // ---------- FAB(トグルボタン、ドラッグ移動可) ----------
@@ -128,14 +143,14 @@
     '<div class="body">' +
       '<div class="view active" data-view="console">' +
         '<div class="toolbar"><button class="btn" data-act="clear-console">Clear</button>' +
-          '<span class="spacer"></span><button class="btn" data-act="close">✕ Close</button></div>' +
+          '<span class="spacer"></span><button class="btn close" data-act="close">&times;</button></div>' +
         '<div class="consolelist" id="consolelist"></div>' +
-        '<div class="inputrow"><input id="cmdinput" placeholder="JSを実行... 例: document.title" />' +
+        '<div class="inputrow"><input id="cmdinput" placeholder="JSを実行... (Enterで実行 / Up,Downで履歴)" />' +
           '<button class="btn" id="cmdrun">実行</button></div>' +
       '</div>' +
       '<div class="view" data-view="elements">' +
-        '<div class="toolbar"><button class="btn" id="pickbtn">🎯 要素を選択</button>' +
-          '<span class="spacer"></span><button class="btn" data-act="close">✕ Close</button></div>' +
+        '<div class="toolbar"><button class="btn" id="pickbtn">要素を選択</button>' +
+          '<span class="spacer"></span><button class="btn close" data-act="close">&times;</button></div>' +
         '<div class="crumbs" id="crumbs"></div>' +
         '<div class="subtabs" id="elsubtabs">' +
           '<button class="btn on" data-elview="styles">Styles</button>' +
@@ -143,19 +158,21 @@
           '<button class="btn" data-elview="html">HTML</button>' +
           '<button class="btn" data-elview="children">Children</button>' +
         '</div>' +
-        '<div id="elcontent"><div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください</div></div>' +
+        '<div id="elcontent"><div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください(選択後は $0 でも参照できます)</div></div>' +
       '</div>' +
       '<div class="view" data-view="network">' +
         '<div class="toolbar"><button class="btn" data-act="clear-network">Clear</button>' +
-          '<span class="spacer"></span><button class="btn" data-act="close">✕ Close</button></div>' +
-        '<div id="netlist"><div class="empty">通信を待機中...(fetch / XHR)</div></div>' +
+          '<label class="chk"><input type="checkbox" id="clearnav" checked /> 画面遷移時にクリア</label>' +
+          '<span class="spacer"></span><button class="btn close" data-act="close">&times;</button></div>' +
+        '<div class="add-row"><input class="pval" id="netsearch" placeholder="URLで絞り込み..." /></div>' +
+        '<div id="netlist"><div class="empty">通信を待機中です(fetch / XHR)</div></div>' +
       '</div>' +
       '<div class="view" data-view="storage">' +
         '<div class="subtabs">' +
           '<button class="btn on" data-store="local">localStorage</button>' +
           '<button class="btn" data-store="session">sessionStorage</button>' +
           '<button class="btn" data-store="cookie">cookie</button>' +
-          '<span class="spacer"></span><button class="btn" data-act="close">✕ Close</button>' +
+          '<span class="spacer"></span><button class="btn close" data-act="close">&times;</button>' +
         '</div>' +
         '<div class="add-row">' +
           '<input class="pkey" id="newkey" placeholder="key" />' +
@@ -173,13 +190,15 @@
   // ---------- 開閉制御 ----------
   function show() { panel.classList.remove('hidden'); }
   function hide() { panel.classList.add('hidden'); }
-  fab.addEventListener('click', function (e) {
+  function onFabClick() {
     if (fab.dataset.dragged === '1') { fab.dataset.dragged = '0'; return; }
     panel.classList.contains('hidden') ? show() : hide();
-  });
-  shadow.addEventListener('click', function (e) {
+  }
+  function onShadowClick(e) {
     if (e.target && e.target.dataset && e.target.dataset.act === 'close') hide();
-  });
+  }
+  fab.addEventListener('click', onFabClick);
+  shadow.addEventListener('click', onShadowClick);
 
   // ---------- タブ切り替え ----------
   $$('.tab').forEach(function (tab) {
@@ -208,7 +227,7 @@
       var y = (e.touches ? e.touches[0].clientY : e.clientY);
       var newH = startH - (y - startY);
       var vh = window.innerHeight;
-      newH = Math.max(150, Math.min(vh * 0.9, newH));
+      newH = Math.max(180, Math.min(vh * 0.92, newH));
       panel.style.height = newH + 'px';
     }
     function onEnd() {
@@ -256,43 +275,130 @@
     el.addEventListener('mousedown', start);
   }
 
-  // ================= Console =================
-  var consolelist = $('#consolelist');
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
-  function stringify(a) {
-    if (a instanceof Error) return a.stack || a.message;
-    if (typeof a === 'object' && a !== null) {
-      try { return JSON.stringify(a, null, 1); } catch (e) { return String(a); }
+
+  // ================= Console(オブジェクトは折りたたみ表示) =================
+  var consolelist = $('#consolelist');
+
+  function formatPreview(v) {
+    if (v === null) return 'null';
+    if (v === undefined) return 'undefined';
+    if (Array.isArray(v)) return 'Array(' + v.length + ')';
+    if (v instanceof Error) return v.name + ': ' + v.message;
+    if (typeof v === 'function') return '\u0192 ' + (v.name || 'anonymous') + '()';
+    if (typeof v === 'object') {
+      var ctor = v.constructor && v.constructor.name;
+      return (ctor && ctor !== 'Object') ? ctor : 'Object';
     }
-    return String(a);
+    return typeof v === 'string' ? '"' + v + '"' : String(v);
   }
+
+  function buildValueNode(v, depth) {
+    if (v !== null && typeof v === 'object' && !(v instanceof Error)) {
+      var wrap = document.createElement('span');
+      wrap.className = 'obj-node';
+      var head = document.createElement('span');
+      head.className = 'obj-head';
+      var tri = document.createElement('span');
+      tri.className = 'obj-tri';
+      tri.textContent = '\u25b8';
+      var label = document.createElement('span');
+      label.textContent = formatPreview(v);
+      head.appendChild(tri);
+      head.appendChild(label);
+      wrap.appendChild(head);
+      var kids = document.createElement('div');
+      kids.className = 'obj-kids';
+      kids.style.display = 'none';
+      var built = false;
+      head.addEventListener('click', function () {
+        var open = kids.style.display !== 'none';
+        if (open) { kids.style.display = 'none'; tri.textContent = '\u25b8'; return; }
+        if (!built) {
+          built = true;
+          if (depth < 5) {
+            Object.keys(v).slice(0, 200).forEach(function (k) {
+              var row = document.createElement('div');
+              row.className = 'obj-row';
+              var kEl = document.createElement('span');
+              kEl.className = 'obj-key';
+              kEl.textContent = k + ': ';
+              row.appendChild(kEl);
+              try { row.appendChild(buildValueNode(v[k], depth + 1)); }
+              catch (e) {
+                var errS = document.createElement('span');
+                errS.className = 'obj-nullish';
+                errS.textContent = '(unreadable)';
+                row.appendChild(errS);
+              }
+              kids.appendChild(row);
+            });
+          } else {
+            var lim = document.createElement('div');
+            lim.className = 'obj-nullish';
+            lim.textContent = '(階層が深すぎるため省略)';
+            kids.appendChild(lim);
+          }
+        }
+        kids.style.display = 'block';
+        tri.textContent = '\u25be';
+      });
+      wrap.appendChild(kids);
+      return wrap;
+    }
+    var span = document.createElement('span');
+    if (v === null || v === undefined) span.className = 'obj-nullish';
+    else if (typeof v === 'string') span.className = 'obj-string';
+    else if (typeof v === 'number') span.className = 'obj-number';
+    else if (typeof v === 'boolean') span.className = 'obj-boolean';
+    span.textContent = formatPreview(v);
+    return span;
+  }
+
   function addConsoleEntry(level, args) {
     var div = document.createElement('div');
     div.className = 'log ' + level;
-    div.innerHTML = esc(Array.prototype.map.call(args, stringify).join(' '));
+    Array.prototype.forEach.call(args, function (a, i) {
+      if (i > 0) div.appendChild(document.createTextNode(' '));
+      if (a instanceof Error) {
+        div.appendChild(document.createTextNode(a.stack || a.message));
+      } else if (a !== null && typeof a === 'object') {
+        div.appendChild(buildValueNode(a, 0));
+      } else {
+        div.appendChild(document.createTextNode(String(a)));
+      }
+    });
     consolelist.appendChild(div);
     consolelist.scrollTop = consolelist.scrollHeight;
   }
+
+  var origConsole = {};
   ['log', 'info', 'warn', 'error', 'debug'].forEach(function (level) {
-    var orig = console[level];
+    origConsole[level] = console[level];
     console[level] = function () {
-      orig.apply(console, arguments);
+      origConsole[level].apply(console, arguments);
       addConsoleEntry(level === 'debug' ? 'log' : level, arguments);
     };
   });
-  window.addEventListener('error', function (e) {
+  function onWindowError(e) {
     addConsoleEntry('error', [e.message + '  @ ' + (e.filename || '') + ':' + e.lineno]);
-  });
-  window.addEventListener('unhandledrejection', function (e) {
-    addConsoleEntry('error', ['Unhandled promise rejection: ' + stringify(e.reason)]);
-  });
+  }
+  function onUnhandledRejection(e) {
+    addConsoleEntry('error', ['Unhandled promise rejection: ' + (e.reason && e.reason.stack ? e.reason.stack : e.reason)]);
+  }
+  window.addEventListener('error', onWindowError);
+  window.addEventListener('unhandledrejection', onUnhandledRejection);
 
   var cmdinput = $('#cmdinput');
+  var cmdHistory = [];
+  var histIndex = -1;
   function runCmd() {
     var code = cmdinput.value;
     if (!code) return;
+    cmdHistory.push(code);
+    histIndex = -1;
     var d = document.createElement('div');
     d.className = 'log cmd';
     d.textContent = '> ' + code;
@@ -307,7 +413,22 @@
     consolelist.scrollTop = consolelist.scrollHeight;
   }
   $('#cmdrun').addEventListener('click', runCmd);
-  cmdinput.addEventListener('keydown', function (e) { if (e.key === 'Enter') runCmd(); });
+  cmdinput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      runCmd();
+    } else if (e.key === 'ArrowUp') {
+      if (!cmdHistory.length) return;
+      histIndex = histIndex === -1 ? cmdHistory.length - 1 : Math.max(0, histIndex - 1);
+      cmdinput.value = cmdHistory[histIndex];
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+      if (histIndex === -1) return;
+      histIndex++;
+      if (histIndex >= cmdHistory.length) { histIndex = -1; cmdinput.value = ''; }
+      else cmdinput.value = cmdHistory[histIndex];
+      e.preventDefault();
+    }
+  });
   shadow.addEventListener('click', function (e) {
     if (e.target && e.target.dataset && e.target.dataset.act === 'clear-console') consolelist.innerHTML = '';
   });
@@ -319,6 +440,7 @@
   var elcontent = $('#elcontent');
   var currentEl = null;
   var currentElView = 'styles';
+  var pickedElements = [];
   var hl = document.createElement('div');
   hl.className = 'highlight';
   hl.style.display = 'none';
@@ -331,23 +453,20 @@
   pickbtn.addEventListener('click', function () {
     picking = !picking;
     pickbtn.classList.toggle('on', picking);
-    pickbtn.textContent = picking ? '🎯 選択中(タップで確定)' : '🎯 要素を選択';
+    pickbtn.textContent = picking ? '選択中(タップで確定・もう一度押すと解除)' : '要素を選択';
     hl.style.display = 'none';
   });
-
-  document.addEventListener('mousemove', pickMove, true);
-  document.addEventListener('touchmove', function (e) {
-    if (!picking) return;
-    var t = e.touches[0];
-    var el = document.elementFromPoint(t.clientX, t.clientY);
-    highlightEl(el);
-  }, true);
-  document.addEventListener('click', pickClick, true);
-  document.addEventListener('touchend', pickClick, true);
 
   function pickMove(e) {
     if (!picking) return;
     highlightEl(e.target);
+  }
+  function pickTouchMove(e) {
+    if (!picking) return;
+    e.preventDefault(); // 選択中はページのスクロールをロックして誤操作を防ぐ
+    var t = e.touches[0];
+    var el = document.elementFromPoint(t.clientX, t.clientY);
+    highlightEl(el);
   }
   function highlightEl(el) {
     if (!el || host.contains(el)) return;
@@ -367,24 +486,30 @@
     e.stopPropagation();
     picking = false;
     pickbtn.classList.remove('on');
-    pickbtn.textContent = '🎯 要素を選択';
+    pickbtn.textContent = '要素を選択';
     selectElement(el);
   }
+  document.addEventListener('mousemove', pickMove, true);
+  document.addEventListener('touchmove', pickTouchMove, { passive: false, capture: true });
+  document.addEventListener('click', pickClick, true);
+  document.addEventListener('touchend', pickClick, true);
 
   function selectElement(el) {
     currentEl = el;
-    window.__mdt_lastEl = el; // console から参照できるように
+    pickedElements.unshift(el);
+    pickedElements = pickedElements.slice(0, 5);
+    pickedElements.forEach(function (e, i) { window['$' + i] = e; });
     renderCrumbs();
     renderElView();
-    // 選択した要素にも一瞬枠を出す
     highlightEl(el);
     setTimeout(function () { if (!picking) hl.style.display = 'none'; }, 600);
+    addConsoleEntry('info', ['要素を選択しました。$0 でコンソールから参照できます(直近5件は $0〜$4)']);
   }
 
   function renderCrumbs() {
     var chain = [];
     var n = currentEl;
-    while (n && n.nodeType === 1 && n !== document.documentElement.parentNode) {
+    while (n && n.nodeType === 1) {
       chain.unshift(n);
       if (n === document.documentElement) break;
       n = n.parentElement;
@@ -412,7 +537,7 @@
 
   function renderElView() {
     if (!currentEl) {
-      elcontent.innerHTML = '<div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください</div>';
+      elcontent.innerHTML = '<div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください(選択後は $0 でも参照できます)</div>';
       return;
     }
     if (currentElView === 'styles') renderStylesView();
@@ -421,7 +546,6 @@
     else renderChildrenView();
   }
 
-  // ---- Styles(編集可能) ----
   function renderStylesView() {
     elcontent.innerHTML = '';
     var box = document.createElement('div');
@@ -434,8 +558,6 @@
       var val = currentEl.style.getPropertyValue(prop) || cs.getPropertyValue(prop) || '';
       elcontent.appendChild(buildStyleRow(prop, val));
     });
-
-    // カスタムで既に inline style にあり、上記リストに無いものも表示
     Array.prototype.forEach.call(currentEl.style, function (prop) {
       if (COMMON_PROPS.indexOf(prop) === -1) {
         elcontent.appendChild(buildStyleRow(prop, currentEl.style.getPropertyValue(prop)));
@@ -477,7 +599,6 @@
     return row;
   }
 
-  // ---- Attributes(編集可能) ----
   function renderAttrsView() {
     elcontent.innerHTML = '';
     var title = document.createElement('div');
@@ -531,7 +652,6 @@
     elcontent.appendChild(addRow);
   }
 
-  // ---- HTML(innerHTMLを編集して即反映) ----
   function renderHtmlView() {
     elcontent.innerHTML = '';
     var title = document.createElement('div');
@@ -546,7 +666,7 @@
 
     var bar = document.createElement('div');
     bar.className = 'applybar';
-    bar.innerHTML = '<button class="btn on">✓ 適用</button><button class="btn">↺ 元に戻す</button>';
+    bar.innerHTML = '<button class="btn on">適用</button><button class="btn">リセット</button>';
     var applyBtn = bar.children[0], resetBtn = bar.children[1];
     applyBtn.addEventListener('click', function () {
       try {
@@ -560,7 +680,6 @@
     elcontent.appendChild(bar);
   }
 
-  // ---- Children(子要素をタップして移動) ----
   function renderChildrenView() {
     elcontent.innerHTML = '';
     var title = document.createElement('div');
@@ -587,53 +706,184 @@
     elcontent.appendChild(list);
   }
 
-  // ================= Network =================
+  // ================= Network(ヘッダー/ボディを展開表示・URL絞り込み・遷移時クリア) =================
   var netlist = $('#netlist');
-  function addNetRow(method, url, statusOrErr, ms, ok) {
-    if (netlist.querySelector('.empty')) netlist.innerHTML = '';
-    var row = document.createElement('div');
-    row.className = 'row';
-    var badgeM = '<span class="badge ' + (method === 'GET' ? 'get' : 'post') + '">' + method + '</span>';
-    var badgeS = '<span class="badge ' + (ok ? 'ok' : 'err') + '">' + statusOrErr + '</span>';
-    row.innerHTML = '<div class="main">' + badgeM + badgeS + esc(url) + '</div>' +
-      '<div class="sub">' + ms + 'ms</div>';
-    netlist.appendChild(row);
+  var netsearch = $('#netsearch');
+  var clearnavChk = $('#clearnav');
+  var netEntries = [];
+
+  function safeBodyPreview(body) {
+    if (body === undefined || body === null) return '';
+    if (typeof body === 'string') return body.slice(0, 2000);
+    if (body instanceof FormData) {
+      var parts = [];
+      body.forEach(function (v, k) { parts.push(k + ' = ' + v); });
+      return parts.join('\n').slice(0, 2000);
+    }
+    try { return JSON.stringify(body).slice(0, 2000); } catch (e) { return String(body).slice(0, 2000); }
+  }
+
+  function addNetEntry(entry) {
+    netEntries.push(entry);
+    renderNetList();
+  }
+  function renderNetList() {
+    var q = (netsearch.value || '').toLowerCase();
+    var filtered = netEntries.filter(function (e) { return !q || e.url.toLowerCase().indexOf(q) !== -1; });
+    netlist.innerHTML = '';
+    if (!filtered.length) {
+      netlist.innerHTML = '<div class="empty">' + (netEntries.length ? '一致する通信がありません' : '通信を待機中です(fetch / XHR)') + '</div>';
+      return;
+    }
+    filtered.forEach(function (entry) { netlist.appendChild(buildNetRow(entry)); });
     netlist.scrollTop = netlist.scrollHeight;
   }
+  function buildKvBlock(title, obj) {
+    var box = document.createElement('div');
+    var t = document.createElement('div'); t.className = 'el-sec-title'; t.textContent = title;
+    box.appendChild(t);
+    var keys = Object.keys(obj || {});
+    if (!keys.length) {
+      var e = document.createElement('div'); e.className = 'empty'; e.textContent = '(なし)';
+      box.appendChild(e); return box;
+    }
+    keys.forEach(function (k) {
+      var row = document.createElement('div'); row.className = 'kv';
+      var kEl = document.createElement('div'); kEl.className = 'k'; kEl.textContent = k;
+      var vEl = document.createElement('div'); vEl.className = 'v'; vEl.textContent = obj[k];
+      row.appendChild(kEl); row.appendChild(vEl);
+      box.appendChild(row);
+    });
+    return box;
+  }
+  function buildTextBlock(title, text) {
+    var box = document.createElement('div');
+    var t = document.createElement('div'); t.className = 'el-sec-title'; t.textContent = title;
+    box.appendChild(t);
+    var pre = document.createElement('div');
+    pre.className = 'net-body';
+    pre.textContent = text || '(空)';
+    box.appendChild(pre);
+    return box;
+  }
+  function buildNetRow(entry) {
+    var wrap = document.createElement('div');
+    wrap.className = 'row net-row';
+    var head = document.createElement('div');
+    head.className = 'main';
+    var badgeM = '<span class="badge ' + (entry.method === 'GET' ? 'get' : 'post') + '">' + entry.method + '</span>';
+    var badgeS = '<span class="badge ' + (entry.ok ? 'ok' : 'err') + '">' + entry.status + '</span>';
+    head.innerHTML = badgeM + badgeS + esc(entry.url);
+    var sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.textContent = entry.ms + 'ms';
+    wrap.appendChild(head);
+    wrap.appendChild(sub);
+
+    var detail = document.createElement('div');
+    detail.className = 'net-detail';
+    detail.style.display = 'none';
+    wrap.appendChild(detail);
+    var built = false;
+    wrap.addEventListener('click', function () {
+      var open = detail.style.display !== 'none';
+      if (open) { detail.style.display = 'none'; return; }
+      if (!built) {
+        built = true;
+        detail.appendChild(buildKvBlock('Request Headers', entry.reqHeaders));
+        detail.appendChild(buildKvBlock('Response Headers', entry.resHeaders));
+        detail.appendChild(buildTextBlock('Request Body', entry.reqBody));
+        detail.appendChild(buildTextBlock('Response Body', entry.resBody));
+      }
+      detail.style.display = 'block';
+    });
+    return wrap;
+  }
+  netsearch.addEventListener('input', renderNetList);
+
   var origFetch = window.fetch;
   if (origFetch) {
     window.fetch = function (input, init) {
       var url = typeof input === 'string' ? input : (input && input.url) || '';
-      var method = (init && init.method) || (input && input.method) || 'GET';
+      var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      var reqHeaders = {};
+      try {
+        var h = (init && init.headers) || (input && input.headers);
+        if (h && h.forEach) h.forEach(function (v, k) { reqHeaders[k] = v; });
+        else if (h) Object.keys(h).forEach(function (k) { reqHeaders[k] = h[k]; });
+      } catch (e) {}
+      var reqBody = safeBodyPreview(init && init.body);
       var t0 = performance.now();
       return origFetch.apply(this, arguments).then(function (res) {
-        addNetRow(method.toUpperCase(), url, res.status, Math.round(performance.now() - t0), res.ok);
+        var ms = Math.round(performance.now() - t0);
+        var resHeaders = {};
+        try { res.headers.forEach(function (v, k) { resHeaders[k] = v; }); } catch (e) {}
+        res.clone().text().then(function (bodyText) {
+          addNetEntry({ method: method, url: url, status: res.status, ok: res.ok, ms: ms, reqHeaders: reqHeaders, resHeaders: resHeaders, reqBody: reqBody, resBody: bodyText.slice(0, 2000) });
+        }).catch(function () {
+          addNetEntry({ method: method, url: url, status: res.status, ok: res.ok, ms: ms, reqHeaders: reqHeaders, resHeaders: resHeaders, reqBody: reqBody, resBody: '(バイナリ、または読み取り不可)' });
+        });
         return res;
       }).catch(function (err) {
-        addNetRow(method.toUpperCase(), url, 'ERR', Math.round(performance.now() - t0), false);
+        addNetEntry({ method: method, url: url, status: 'ERR', ok: false, ms: Math.round(performance.now() - t0), reqHeaders: reqHeaders, resHeaders: {}, reqBody: reqBody, resBody: String(err) });
         throw err;
       });
     };
   }
   var origOpen = XMLHttpRequest.prototype.open;
   var origSend = XMLHttpRequest.prototype.send;
+  var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
   XMLHttpRequest.prototype.open = function (method, url) {
-    this.__mdt = { method: method, url: url, t0: performance.now() };
+    this.__mdt = { method: method, url: url };
     return origOpen.apply(this, arguments);
   };
-  XMLHttpRequest.prototype.send = function () {
+  XMLHttpRequest.prototype.setRequestHeader = function (k, v) {
+    this.__mdt = this.__mdt || {};
+    this.__mdt.reqHeaders = this.__mdt.reqHeaders || {};
+    this.__mdt.reqHeaders[k] = v;
+    return origSetHeader.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function (body) {
+    this.__mdt = this.__mdt || {};
+    this.__mdt.t0 = performance.now();
+    this.__mdt.reqBody = safeBodyPreview(body);
     var self = this;
     this.addEventListener('loadend', function () {
-      if (self.__mdt) {
-        addNetRow(String(self.__mdt.method).toUpperCase(), self.__mdt.url, self.status,
-          Math.round(performance.now() - self.__mdt.t0), self.status >= 200 && self.status < 400);
-      }
+      var m = self.__mdt || {};
+      var resHeadersRaw = '';
+      try { resHeadersRaw = self.getAllResponseHeaders() || ''; } catch (e) {}
+      var resHeaders = {};
+      resHeadersRaw.split('\r\n').forEach(function (line) {
+        var idx = line.indexOf(':');
+        if (idx > 0) resHeaders[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+      });
+      var resBody = '';
+      try { resBody = (typeof self.responseText === 'string') ? self.responseText.slice(0, 2000) : '(テキスト以外のレスポンス)'; }
+      catch (e) { resBody = '(読み取り不可)'; }
+      addNetEntry({
+        method: String(m.method || 'GET').toUpperCase(), url: m.url, status: self.status,
+        ok: self.status >= 200 && self.status < 400, ms: Math.round(performance.now() - (m.t0 || performance.now())),
+        reqHeaders: m.reqHeaders || {}, resHeaders: resHeaders, reqBody: m.reqBody || '', resBody: resBody
+      });
     });
     return origSend.apply(this, arguments);
   };
+
+  // SPAのページ遷移(history API)を検知してNetworkログを自動クリア
+  var origPushState = history.pushState;
+  var origReplaceState = history.replaceState;
+  function onNav() {
+    if (clearnavChk.checked) { netEntries = []; renderNetList(); }
+  }
+  history.pushState = function () { var r = origPushState.apply(this, arguments); onNav(); return r; };
+  history.replaceState = function () { var r = origReplaceState.apply(this, arguments); onNav(); return r; };
+  window.addEventListener('popstate', onNav);
+  window.addEventListener('hashchange', onNav);
+
   shadow.addEventListener('click', function (e) {
     if (e.target && e.target.dataset && e.target.dataset.act === 'clear-network') {
-      netlist.innerHTML = '<div class="empty">通信を待機中...(fetch / XHR)</div>';
+      netEntries = [];
+      renderNetList();
     }
   });
 
@@ -728,14 +978,31 @@
     if (tab.dataset.tab === 'storage') tab.addEventListener('click', renderStorage);
   });
 
-  // ---------- 外部API ----------
+  // ---------- 外部API(destroy ですべてのフックとイベントリスナーを復元) ----------
   window.__miniDevTools = {
     toggle: function () { panel.classList.contains('hidden') ? show() : hide(); },
     destroy: function () {
+      ['log', 'info', 'warn', 'error', 'debug'].forEach(function (level) {
+        console[level] = origConsole[level];
+      });
+      if (origFetch) window.fetch = origFetch;
+      XMLHttpRequest.prototype.open = origOpen;
+      XMLHttpRequest.prototype.send = origSend;
+      XMLHttpRequest.prototype.setRequestHeader = origSetHeader;
+      history.pushState = origPushState;
+      history.replaceState = origReplaceState;
+      window.removeEventListener('popstate', onNav);
+      window.removeEventListener('hashchange', onNav);
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+      document.removeEventListener('mousemove', pickMove, true);
+      document.removeEventListener('touchmove', pickTouchMove, true);
+      document.removeEventListener('click', pickClick, true);
+      document.removeEventListener('touchend', pickClick, true);
       host.remove();
       delete window.__miniDevTools;
     }
   };
 
-  addConsoleEntry('info', ['Mini DevTools 起動しました 📱']);
+  addConsoleEntry('info', ['Mini DevTools を起動しました']);
 })();
