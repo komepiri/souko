@@ -81,8 +81,30 @@
     '.badge.err{background:#c62828;color:#fff;}' +
     '.highlight{position:fixed;background:rgba(79,195,247,.25);border:1px solid #4fc3f7;pointer-events:none;z-index:2147483647;}' +
     '.eltinfo{padding:6px 4px;font-family:Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;border-bottom:1px solid #333;background:#151515;}' +
-    '.subtabs{display:flex;gap:6px;padding:5px 8px;border-bottom:1px solid #2a2a2a;flex-shrink:0;}' +
-    '.subtabs .btn.on{background:#0d5c8a;}';
+    '.subtabs{display:flex;gap:6px;padding:5px 8px;border-bottom:1px solid #2a2a2a;flex-shrink:0;overflow-x:auto;}' +
+    '.subtabs .btn.on{background:#0d5c8a;}' +
+    '.crumbs{display:flex;gap:2px;overflow-x:auto;padding:6px 8px;border-bottom:1px solid #2a2a2a;flex-shrink:0;white-space:nowrap;}' +
+    '.crumb{color:#4fc3f7;font-family:Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:3px;flex-shrink:0;}' +
+    '.crumb:after{content:"›";color:#555;margin-left:4px;}' +
+    '.crumb:last-child:after{content:"";}' +
+    '.crumb.current{background:#0d5c8a;color:#fff;}' +
+    '.el-sec-title{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.03em;padding:8px 4px 4px;}' +
+    '.style-row{display:flex;align-items:center;gap:4px;padding:3px 2px;}' +
+    '.style-row .prop{color:#4fc3f7;font-family:Menlo,Consolas,monospace;font-size:11px;width:36%;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+    '.style-row input{flex:1;min-width:0;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:4px;padding:4px 6px;font-size:11px;font-family:Menlo,Consolas,monospace;}' +
+    '.style-row input:focus{border-color:#4fc3f7;outline:none;}' +
+    '.icon-btn{background:#3a1e1e;color:#ff8a8a;border:1px solid #4a2a2a;border-radius:4px;padding:3px 7px;font-size:11px;flex-shrink:0;}' +
+    '.add-row{display:flex;gap:4px;padding:6px 4px;align-items:center;}' +
+    '.add-row input{min-width:0;background:#111;color:#e0e0e0;border:1px dashed #444;border-radius:4px;padding:5px 6px;font-size:11px;font-family:Menlo,Consolas,monospace;}' +
+    '.add-row input.pkey{flex:0 0 36%;}' +
+    '.add-row input.pval{flex:1;}' +
+    '.add-row .btn{flex-shrink:0;}' +
+    '.children-list .child{padding:5px 4px;border-bottom:1px solid #262626;font-family:Menlo,Consolas,monospace;font-size:12px;color:#9ccc65;}' +
+    '.children-list .child .cnt{color:#666;font-size:10px;}' +
+    '.htmlarea{width:100%;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:5px;padding:8px;' +
+      'font-family:Menlo,Consolas,monospace;font-size:12px;min-height:110px;resize:vertical;}' +
+    '.applybar{display:flex;gap:6px;padding:6px 4px;}' +
+    '.selecthint{color:#666;text-align:center;padding:24px 8px;font-size:12px;}';
   shadow.appendChild(style);
 
   // ---------- FAB(トグルボタン、ドラッグ移動可) ----------
@@ -114,7 +136,14 @@
       '<div class="view" data-view="elements">' +
         '<div class="toolbar"><button class="btn" id="pickbtn">🎯 要素を選択</button>' +
           '<span class="spacer"></span><button class="btn" data-act="close">✕ Close</button></div>' +
-        '<div id="eltinfo" class="empty">「要素を選択」をタップしてページ内の要素をタップしてください</div>' +
+        '<div class="crumbs" id="crumbs"></div>' +
+        '<div class="subtabs" id="elsubtabs">' +
+          '<button class="btn on" data-elview="styles">Styles</button>' +
+          '<button class="btn" data-elview="attrs">Attributes</button>' +
+          '<button class="btn" data-elview="html">HTML</button>' +
+          '<button class="btn" data-elview="children">Children</button>' +
+        '</div>' +
+        '<div id="elcontent"><div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください</div></div>' +
       '</div>' +
       '<div class="view" data-view="network">' +
         '<div class="toolbar"><button class="btn" data-act="clear-network">Clear</button>' +
@@ -127,6 +156,11 @@
           '<button class="btn" data-store="session">sessionStorage</button>' +
           '<button class="btn" data-store="cookie">cookie</button>' +
           '<span class="spacer"></span><button class="btn" data-act="close">✕ Close</button>' +
+        '</div>' +
+        '<div class="add-row">' +
+          '<input class="pkey" id="newkey" placeholder="key" />' +
+          '<input class="pval" id="newval" placeholder="value" />' +
+          '<button class="btn" id="newadd">+ 追加</button>' +
         '</div>' +
         '<div id="storelist"></div>' +
       '</div>' +
@@ -281,11 +315,18 @@
   // ================= Elements =================
   var picking = false;
   var pickbtn = $('#pickbtn');
-  var eltinfo = $('#eltinfo');
+  var crumbs = $('#crumbs');
+  var elcontent = $('#elcontent');
+  var currentEl = null;
+  var currentElView = 'styles';
   var hl = document.createElement('div');
   hl.className = 'highlight';
   hl.style.display = 'none';
   shadow.appendChild(hl);
+
+  var COMMON_PROPS = ['display', 'position', 'top', 'left', 'right', 'bottom', 'width', 'height',
+    'color', 'background-color', 'font-size', 'font-weight', 'text-align',
+    'margin', 'padding', 'border', 'border-radius', 'z-index', 'opacity', 'flex', 'gap'];
 
   pickbtn.addEventListener('click', function () {
     picking = !picking;
@@ -327,25 +368,223 @@
     picking = false;
     pickbtn.classList.remove('on');
     pickbtn.textContent = '🎯 要素を選択';
-    showEltInfo(el);
+    selectElement(el);
   }
-  function showEltInfo(el) {
-    var cs = getComputedStyle(el);
-    var attrs = Array.prototype.map.call(el.attributes, function (a) { return a.name + '="' + a.value + '"'; }).join(' ');
-    var text =
-      '<' + el.tagName.toLowerCase() + (attrs ? ' ' + attrs : '') + '>\n\n' +
-      'size: ' + Math.round(el.getBoundingClientRect().width) + ' x ' + Math.round(el.getBoundingClientRect().height) + '\n' +
-      'display: ' + cs.display + '   position: ' + cs.position + '\n' +
-      'color: ' + cs.color + '\n' +
-      'background: ' + cs.backgroundColor + '\n' +
-      'font: ' + cs.fontSize + ' ' + cs.fontFamily + '\n' +
-      'margin: ' + cs.margin + '\n' +
-      'padding: ' + cs.padding + '\n\n' +
-      'text: ' + (el.textContent || '').trim().slice(0, 150);
-    eltinfo.className = 'eltinfo';
-    eltinfo.textContent = text;
-    window.__mdt_lastEl = el; // console から $0 相当で使えるように
-    addConsoleEntry('info', ['選択した要素は window.__mdt_lastEl から参照できます']);
+
+  function selectElement(el) {
+    currentEl = el;
+    window.__mdt_lastEl = el; // console から参照できるように
+    renderCrumbs();
+    renderElView();
+    // 選択した要素にも一瞬枠を出す
+    highlightEl(el);
+    setTimeout(function () { if (!picking) hl.style.display = 'none'; }, 600);
+  }
+
+  function renderCrumbs() {
+    var chain = [];
+    var n = currentEl;
+    while (n && n.nodeType === 1 && n !== document.documentElement.parentNode) {
+      chain.unshift(n);
+      if (n === document.documentElement) break;
+      n = n.parentElement;
+    }
+    crumbs.innerHTML = '';
+    chain.forEach(function (node) {
+      var c = document.createElement('span');
+      c.className = 'crumb' + (node === currentEl ? ' current' : '');
+      c.textContent = node.tagName.toLowerCase() + (node.id ? '#' + node.id : '') +
+        (node.classList && node.classList.length ? '.' + Array.prototype.join.call(node.classList, '.') : '');
+      c.addEventListener('click', function () { selectElement(node); });
+      crumbs.appendChild(c);
+    });
+    crumbs.scrollLeft = crumbs.scrollWidth;
+  }
+
+  $$('[data-elview]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      $$('[data-elview]').forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      currentElView = b.dataset.elview;
+      renderElView();
+    });
+  });
+
+  function renderElView() {
+    if (!currentEl) {
+      elcontent.innerHTML = '<div class="selecthint">「要素を選択」をタップしてページ内の要素をタップしてください</div>';
+      return;
+    }
+    if (currentElView === 'styles') renderStylesView();
+    else if (currentElView === 'attrs') renderAttrsView();
+    else if (currentElView === 'html') renderHtmlView();
+    else renderChildrenView();
+  }
+
+  // ---- Styles(編集可能) ----
+  function renderStylesView() {
+    elcontent.innerHTML = '';
+    var box = document.createElement('div');
+    box.className = 'el-sec-title';
+    box.textContent = '<' + currentEl.tagName.toLowerCase() + '> の style を編集';
+    elcontent.appendChild(box);
+
+    var cs = getComputedStyle(currentEl);
+    COMMON_PROPS.forEach(function (prop) {
+      var val = currentEl.style.getPropertyValue(prop) || cs.getPropertyValue(prop) || '';
+      elcontent.appendChild(buildStyleRow(prop, val));
+    });
+
+    // カスタムで既に inline style にあり、上記リストに無いものも表示
+    Array.prototype.forEach.call(currentEl.style, function (prop) {
+      if (COMMON_PROPS.indexOf(prop) === -1) {
+        elcontent.appendChild(buildStyleRow(prop, currentEl.style.getPropertyValue(prop)));
+      }
+    });
+
+    var addTitle = document.createElement('div');
+    addTitle.className = 'el-sec-title';
+    addTitle.textContent = 'プロパティを追加';
+    elcontent.appendChild(addTitle);
+
+    var addRow = document.createElement('div');
+    addRow.className = 'add-row';
+    addRow.innerHTML = '<input class="pkey" placeholder="property (例: color)" />' +
+      '<input class="pval" placeholder="value (例: red)" />' +
+      '<button class="btn">+ 追加</button>';
+    var pkey = addRow.querySelector('.pkey'), pval = addRow.querySelector('.pval');
+    addRow.querySelector('button').addEventListener('click', function () {
+      if (!pkey.value) return;
+      currentEl.style.setProperty(pkey.value.trim(), pval.value.trim());
+      renderStylesView();
+    });
+    elcontent.appendChild(addRow);
+  }
+  function buildStyleRow(prop, val) {
+    var row = document.createElement('div');
+    row.className = 'style-row';
+    var label = document.createElement('div');
+    label.className = 'prop';
+    label.textContent = prop;
+    var input = document.createElement('input');
+    input.value = val;
+    input.addEventListener('change', function () {
+      if (input.value === '') currentEl.style.removeProperty(prop);
+      else currentEl.style.setProperty(prop, input.value);
+    });
+    row.appendChild(label);
+    row.appendChild(input);
+    return row;
+  }
+
+  // ---- Attributes(編集可能) ----
+  function renderAttrsView() {
+    elcontent.innerHTML = '';
+    var title = document.createElement('div');
+    title.className = 'el-sec-title';
+    title.textContent = '属性';
+    elcontent.appendChild(title);
+
+    Array.prototype.forEach.call(currentEl.attributes, function (attr) {
+      var row = document.createElement('div');
+      row.className = 'style-row';
+      var label = document.createElement('div');
+      label.className = 'prop';
+      label.textContent = attr.name;
+      var input = document.createElement('input');
+      input.value = attr.value;
+      input.addEventListener('change', function () {
+        currentEl.setAttribute(attr.name, input.value);
+        if (attr.name === 'class' || attr.name === 'id') renderCrumbs();
+      });
+      var del = document.createElement('button');
+      del.className = 'icon-btn';
+      del.textContent = '削除';
+      del.addEventListener('click', function () {
+        currentEl.removeAttribute(attr.name);
+        renderAttrsView();
+        renderCrumbs();
+      });
+      row.appendChild(label);
+      row.appendChild(input);
+      row.appendChild(del);
+      elcontent.appendChild(row);
+    });
+
+    var addTitle = document.createElement('div');
+    addTitle.className = 'el-sec-title';
+    addTitle.textContent = '属性を追加';
+    elcontent.appendChild(addTitle);
+
+    var addRow = document.createElement('div');
+    addRow.className = 'add-row';
+    addRow.innerHTML = '<input class="pkey" placeholder="name (例: data-foo)" />' +
+      '<input class="pval" placeholder="value" />' +
+      '<button class="btn">+ 追加</button>';
+    var pkey = addRow.querySelector('.pkey'), pval = addRow.querySelector('.pval');
+    addRow.querySelector('button').addEventListener('click', function () {
+      if (!pkey.value) return;
+      currentEl.setAttribute(pkey.value.trim(), pval.value);
+      renderAttrsView();
+      renderCrumbs();
+    });
+    elcontent.appendChild(addRow);
+  }
+
+  // ---- HTML(innerHTMLを編集して即反映) ----
+  function renderHtmlView() {
+    elcontent.innerHTML = '';
+    var title = document.createElement('div');
+    title.className = 'el-sec-title';
+    title.textContent = 'innerHTML(編集して適用を押すと反映されます)';
+    elcontent.appendChild(title);
+
+    var ta = document.createElement('textarea');
+    ta.className = 'htmlarea';
+    ta.value = currentEl.innerHTML;
+    elcontent.appendChild(ta);
+
+    var bar = document.createElement('div');
+    bar.className = 'applybar';
+    bar.innerHTML = '<button class="btn on">✓ 適用</button><button class="btn">↺ 元に戻す</button>';
+    var applyBtn = bar.children[0], resetBtn = bar.children[1];
+    applyBtn.addEventListener('click', function () {
+      try {
+        currentEl.innerHTML = ta.value;
+        addConsoleEntry('info', ['innerHTML を更新しました']);
+      } catch (err) {
+        addConsoleEntry('error', [err]);
+      }
+    });
+    resetBtn.addEventListener('click', renderHtmlView);
+    elcontent.appendChild(bar);
+  }
+
+  // ---- Children(子要素をタップして移動) ----
+  function renderChildrenView() {
+    elcontent.innerHTML = '';
+    var title = document.createElement('div');
+    title.className = 'el-sec-title';
+    title.textContent = '子要素(タップで選択を移動)';
+    elcontent.appendChild(title);
+
+    var list = document.createElement('div');
+    list.className = 'children-list';
+    if (!currentEl.children.length) {
+      list.innerHTML = '<div class="empty">子要素はありません</div>';
+    } else {
+      Array.prototype.forEach.call(currentEl.children, function (child) {
+        var row = document.createElement('div');
+        row.className = 'child';
+        row.innerHTML = '&lt;' + child.tagName.toLowerCase() +
+          (child.id ? ' id="' + esc(child.id) + '"' : '') +
+          (child.className && typeof child.className === 'string' ? ' class="' + esc(child.className) + '"' : '') +
+          '&gt; <span class="cnt">' + child.children.length + ' children</span>';
+        row.addEventListener('click', function () { selectElement(child); });
+        list.appendChild(row);
+      });
+    }
+    elcontent.appendChild(list);
   }
 
   // ================= Network =================
@@ -398,40 +637,85 @@
     }
   });
 
-  // ================= Storage =================
+  // ================= Storage(新規作成・編集・削除に対応) =================
   var storelist = $('#storelist');
+  var newkeyInput = $('#newkey'), newvalInput = $('#newval'), newaddBtn = $('#newadd');
   var currentStore = 'local';
+
+  function getStoreObj() {
+    return currentStore === 'local' ? localStorage : sessionStorage;
+  }
+  function setPair(key, val) {
+    if (!key) return;
+    if (currentStore === 'cookie') {
+      document.cookie = encodeURIComponent(key) + '=' + encodeURIComponent(val) + '; path=/';
+    } else {
+      getStoreObj().setItem(key, val);
+    }
+  }
+  function deletePair(key) {
+    if (currentStore === 'cookie') {
+      document.cookie = encodeURIComponent(key) + '=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+    } else {
+      getStoreObj().removeItem(key);
+    }
+  }
+
+  newaddBtn.addEventListener('click', function () {
+    if (!newkeyInput.value) return;
+    setPair(newkeyInput.value.trim(), newvalInput.value);
+    newkeyInput.value = '';
+    newvalInput.value = '';
+    renderStorage();
+  });
+
   function renderStorage() {
     storelist.innerHTML = '';
+    var pairs = [];
     if (currentStore === 'cookie') {
-      var pairs = document.cookie.split(';').map(function (s) { return s.trim(); }).filter(Boolean);
-      if (!pairs.length) { storelist.innerHTML = '<div class="empty">cookieはありません</div>'; return; }
-      pairs.forEach(function (p) {
+      document.cookie.split(';').map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (p) {
         var idx = p.indexOf('=');
-        addKv(p.slice(0, idx), p.slice(idx + 1), null);
+        pairs.push([decodeURIComponent(p.slice(0, idx)), decodeURIComponent(p.slice(idx + 1))]);
       });
+    } else {
+      var store = getStoreObj();
+      for (var i = 0; i < store.length; i++) {
+        var k = store.key(i);
+        pairs.push([k, store.getItem(k)]);
+      }
+    }
+    if (!pairs.length) {
+      storelist.innerHTML = '<div class="empty">データがありません(上の入力欄から追加できます)</div>';
       return;
     }
-    var store = currentStore === 'local' ? localStorage : sessionStorage;
-    if (!store.length) { storelist.innerHTML = '<div class="empty">データがありません</div>'; return; }
-    for (var i = 0; i < store.length; i++) {
-      (function (key) {
-        addKv(key, store.getItem(key), function () { store.removeItem(key); renderStorage(); });
-      })(store.key(i));
-    }
+    pairs.forEach(function (pair) { addKv(pair[0], pair[1]); });
   }
-  function addKv(k, v, onDel) {
+
+  function addKv(k, v) {
     var row = document.createElement('div');
     row.className = 'kv';
-    row.innerHTML = '<div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div>';
-    if (onDel) {
-      var b = document.createElement('button');
-      b.textContent = '削除';
-      b.addEventListener('click', onDel);
-      row.appendChild(b);
-    }
+    var kEl = document.createElement('div');
+    kEl.className = 'k';
+    kEl.textContent = k;
+    var vInput = document.createElement('input');
+    vInput.value = v;
+    vInput.style.cssText = 'flex:1;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;' +
+      'padding:4px 6px;font-size:12px;font-family:Menlo,Consolas,monospace;text-align:right;min-width:0;';
+    vInput.addEventListener('change', function () {
+      setPair(k, vInput.value);
+    });
+    var delBtn = document.createElement('button');
+    delBtn.textContent = '削除';
+    delBtn.addEventListener('click', function () {
+      deletePair(k);
+      renderStorage();
+    });
+    row.appendChild(kEl);
+    row.appendChild(vInput);
+    row.appendChild(delBtn);
     storelist.appendChild(row);
   }
+
   $$('[data-store]').forEach(function (b) {
     b.addEventListener('click', function () {
       $$('[data-store]').forEach(function (x) { x.classList.remove('on'); });
